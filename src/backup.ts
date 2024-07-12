@@ -29,9 +29,38 @@ const dumpToFile = async (path: string) => {
       
       const stats = await fs.stat(path);
       await logToFile(`Dump completed. File size: ${stats.size} bytes`);
+      
+      // Read and log a sample of the file content
+      const fileContent = await fs.readFile(path, 'utf8');
+      await logToFile(`File content sample: ${fileContent.substring(0, 200)}`);
+      
       resolve(undefined);
     });
   });
+};
+
+const uploadToGCS = async ({ name, path }: { name: string; path: string }) => {
+  await logToFile("Uploading backup to GCS...");
+
+  const bucketName = env.GCS_BUCKET;
+
+  const uploadOptions: UploadOptions = {
+    destination: name,
+  };
+
+  const storage = new Storage({
+    projectId: env.GOOGLE_PROJECT_ID,
+    credentials: JSON.parse(env.SERVICE_ACCOUNT_JSON),
+  });
+
+  try {
+    const [file] = await storage.bucket(bucketName).upload(path, uploadOptions);
+    const [metadata] = await file.getMetadata();
+    await logToFile(`Backup uploaded to GCS successfully. Size: ${metadata.size} bytes`);
+  } catch (error) {
+    await logToFile(`Error uploading to GCS: ${error}`);
+    throw error;
+  }
 };
 
 const uploadToGCS = async ({ name, path }: { name: string; path: string }) => {
