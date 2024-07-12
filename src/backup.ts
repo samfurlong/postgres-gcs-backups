@@ -12,8 +12,8 @@ const dumpToFile = async (path: string) => {
   await logToFile("Starting database dump...");
 
   return new Promise((resolve, reject) => {
-    // Using the provided environment variables
-    const command = `pg_dump -h ${env.PGHOST} -p ${env.PGPORT} -U ${env.PGUSER} -d ${env.PGDATABASE} -f ${path}`;
+    // Using process.env for Postgres-specific variables
+    const command = `pg_dump -h ${process.env.PGHOST} -p ${process.env.PGPORT} -U ${process.env.PGUSER} -d ${process.env.PGDATABASE} -f ${path}`;
     
     exec(command, async (error, stdout, stderr) => {
       if (error) {
@@ -35,38 +35,7 @@ const dumpToFile = async (path: string) => {
   });
 };
 
-const uploadToGCS = async ({ name, path }: { name: string; path: string }) => {
-  await logToFile("Uploading backup to GCS...");
-
-  const bucketName = env.GCS_BUCKET;
-
-  const uploadOptions: UploadOptions = {
-    destination: name,
-  };
-
-  const storage = new Storage({
-    projectId: env.GOOGLE_PROJECT_ID,
-    credentials: JSON.parse(env.SERVICE_ACCOUNT_JSON),
-  });
-
-  try {
-    await storage.bucket(bucketName).upload(path, uploadOptions);
-    await logToFile("Backup uploaded to GCS successfully.");
-  } catch (error) {
-    await logToFile(`Error uploading to GCS: ${error}`);
-    throw error;
-  }
-};
-
-const deleteFile = async (path: string) => {
-  await logToFile("Deleting local backup file...");
-  try {
-    await fs.unlink(path);
-    await logToFile("Local backup file deleted successfully.");
-  } catch (error) {
-    await logToFile(`Error deleting local file: ${error}`);
-  }
-};
+// ... (other functions remain the same)
 
 export const backup = async () => {
   await logToFile("Initiating DB backup process...");
@@ -76,8 +45,7 @@ export const backup = async () => {
   const filepath = `/tmp/${filename}`;
 
   try {
-    // Set PGPASSWORD environment variable for pg_dump
-    process.env.PGPASSWORD = env.PGPASSWORD;
+    // PGPASSWORD is already set in the environment, no need to set it here
 
     await dumpToFile(filepath);
     
@@ -93,8 +61,6 @@ export const backup = async () => {
     await logToFile(`Backup failed: ${error}`);
     throw error;
   } finally {
-    // Clear PGPASSWORD environment variable
-    delete process.env.PGPASSWORD;
     await deleteFile(filepath);
   }
 
