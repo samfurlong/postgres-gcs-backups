@@ -12,7 +12,8 @@ const dumpToFile = async (path: string) => {
   await logToFile("Starting database dump...");
 
   return new Promise((resolve, reject) => {
-    const command = `PGPASSWORD="${env.DB_PASSWORD}" pg_dump -h ${env.DB_HOST} -U ${env.DB_USER} -d ${env.DB_NAME} -f ${path}`;
+    // Using the provided environment variables
+    const command = `pg_dump -h ${env.PGHOST} -p ${env.PGPORT} -U ${env.PGUSER} -d ${env.PGDATABASE} -f ${path}`;
     
     exec(command, async (error, stdout, stderr) => {
       if (error) {
@@ -71,10 +72,13 @@ export const backup = async () => {
   await logToFile("Initiating DB backup process...");
 
   const timestamp = new Date().toISOString().replace(/[:.]+/g, "-");
-  const filename = `${env.BACKUP_PREFIX}backup-${timestamp}.sql`;
+  const filename = `backup-${timestamp}.sql`;
   const filepath = `/tmp/${filename}`;
 
   try {
+    // Set PGPASSWORD environment variable for pg_dump
+    process.env.PGPASSWORD = env.PGPASSWORD;
+
     await dumpToFile(filepath);
     
     const stats = await fs.stat(filepath);
@@ -89,6 +93,8 @@ export const backup = async () => {
     await logToFile(`Backup failed: ${error}`);
     throw error;
   } finally {
+    // Clear PGPASSWORD environment variable
+    delete process.env.PGPASSWORD;
     await deleteFile(filepath);
   }
 
