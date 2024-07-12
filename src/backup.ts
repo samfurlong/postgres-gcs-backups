@@ -12,7 +12,6 @@ const dumpToFile = async (path: string) => {
   await logToFile("Starting database dump...");
 
   return new Promise((resolve, reject) => {
-    // Using process.env for Postgres-specific variables
     const command = `pg_dump -h ${process.env.PGHOST} -p ${process.env.PGPORT} -U ${process.env.PGUSER} -d ${process.env.PGDATABASE} -f ${path}`;
     
     exec(command, async (error, stdout, stderr) => {
@@ -35,7 +34,38 @@ const dumpToFile = async (path: string) => {
   });
 };
 
-// ... (other functions remain the same)
+const uploadToGCS = async ({ name, path }: { name: string; path: string }) => {
+  await logToFile("Uploading backup to GCS...");
+
+  const bucketName = env.GCS_BUCKET;
+
+  const uploadOptions: UploadOptions = {
+    destination: name,
+  };
+
+  const storage = new Storage({
+    projectId: env.GOOGLE_PROJECT_ID,
+    credentials: JSON.parse(env.SERVICE_ACCOUNT_JSON),
+  });
+
+  try {
+    await storage.bucket(bucketName).upload(path, uploadOptions);
+    await logToFile("Backup uploaded to GCS successfully.");
+  } catch (error) {
+    await logToFile(`Error uploading to GCS: ${error}`);
+    throw error;
+  }
+};
+
+const deleteFile = async (path: string) => {
+  await logToFile("Deleting local backup file...");
+  try {
+    await fs.unlink(path);
+    await logToFile("Local backup file deleted successfully.");
+  } catch (error) {
+    await logToFile(`Error deleting local file: ${error}`);
+  }
+};
 
 export const backup = async () => {
   await logToFile("Initiating DB backup process...");
@@ -45,8 +75,6 @@ export const backup = async () => {
   const filepath = `/tmp/${filename}`;
 
   try {
-    // PGPASSWORD is already set in the environment, no need to set it here
-
     await dumpToFile(filepath);
     
     const stats = await fs.stat(filepath);
