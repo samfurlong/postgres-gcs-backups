@@ -1,83 +1,96 @@
-import { Pool } from 'pg';
-import fs from 'fs';
-import zlib from 'zlib';
-import { pipeline } from 'stream/promises';
+import { exec } from "child_process";
+import fs from "fs/promises";
+import { Storage, UploadOptions } from "@google-cloud/storage";
+import { env } from "./env";
 
-const backupToFile = async (path: string) => {
-  console.log("Initiating DB dump to file...");
+const logToFile = async (message: string) => {
+  const logPath = '/tmp/backup_log.txt';
+  await fs.appendFile(logPath, `${new Date().toISOString()}: ${message}\n`);
+};
 
-  const pool = new Pool({
-    connectionString: env.BACKUP_DATABASE_URL,
+const dumpToFile = async (path: string) => {
+  await logToFile("Starting database dump...");
+
+  return new Promise((resolve, reject) => {
+    const command = `PGPASSWORD="${env.DB_PASSWORD}" pg_dump -h ${env.DB_HOST} -U ${env.DB_USER} -d ${env.DB_NAME} -f ${path}`;
+    
+    exec(command, async (error, stdout, stderr) => {
+      if (error) {
+        await logToFile(`Dump error: ${error.message}`);
+        reject(error);
+        return;
+      }
+      if (stderr) {
+        await logToFile(`Dump stderr: ${stderr}`);
+      }
+      if (stdout) {
+        await logToFile(`Dump stdout: ${stdout}`);
+      }
+      
+      const stats = await fs.stat(path);
+      await logToFile(`Dump completed. File size: ${stats.size} bytes`);
+      resolve(undefined);
+    });
+  });
+};
+
+const uploadToGCS = async ({ name, path }: { name: string; path: string }) => {
+  await logToFile("Uploading backup to GCS...");
+
+  const bucketName = env.GCS_BUCKET;
+
+  const uploadOptions: UploadOptions = {
+    destination: name,
+  };
+
+  const storage = new Storage({
+    projectId: env.GOOGLE_PROJECT_ID,
+    credentials: JSON.parse(env.SERVICE_ACCOUNT_JSON),
   });
 
   try {
-    // Test the connection
-    const client = await pool.connect();
-    console.log("Successfully connected to the database.");
-
-    // Check user permissions
-    const userCheck = await client.query(`
-      SELECT current_user, current_database(), 
-             has_database_privilege(current_user, current_database(), 'CONNECT') as can_connect,
-             has_schema_privilege(current_user, 'public', 'USAGE') as can_use_public,
-             has_schema_privilege(current_user, 'information_schema', 'USAGE') as can_use_info_schema
-    `);
-    console.log("User permissions:", userCheck.rows[0]);
-
-    // Check accessible tables
-    const tableCheck = await client.query(`
-      SELECT schemaname, tablename 
-      FROM pg_catalog.pg_tables
-      WHERE has_table_privilege(current_user, schemaname || '.' || tablename, 'SELECT')
-    `);
-    console.log("Accessible tables:", tableCheck.rows);
-
-    if (tableCheck.rows.length === 0) {
-      throw new Error("No accessible tables found. Check database permissions.");
-    }
-
-    const gzip = zlib.createGzip();
-    const writeStream = fs.createWriteStream(path);
-
-    await pipeline(gzip, writeStream);
-
-    for (const row of tableCheck.rows) {
-      const schemaName = row.schemaname;
-      const tableName = row.tablename;
-      const fullTableName = `"${schemaName}"."${tableName}"`;
-      console.log(`Attempting to backup table: ${fullTableName}`);
-
-      try {
-        // Write table schema
-        const schemaQuery = await client.query(`
-          SELECT pg_dump_table_schema('${fullTableName}') as schema
-        `);
-        gzip.write(schemaQuery.rows[0].schema + '\n');
-
-        // Stream table data
-        const dataQuery = client.query(`COPY ${fullTableName} TO STDOUT`);
-        let rowCount = 0;
-        dataQuery.on('row', (row) => {
-          gzip.write(row + '\n');
-          rowCount++;
-        });
-
-        await new Promise((resolve) => dataQuery.on('end', resolve));
-        console.log(`Backed up ${rowCount} rows from ${fullTableName}`);
-      } catch (error) {
-        console.error(`Error backing up table ${fullTableName}:`, error);
-      }
-    }
-
-    gzip.end();
-    client.release();
+    await storage.bucket(bucketName).upload(path, uploadOptions);
+    await logToFile("Backup uploaded to GCS successfully.");
   } catch (error) {
-    console.error("Error during backup process:", error);
+    await logToFile(`Error uploading to GCS: ${error}`);
+    throw error;
+  }
+};
+
+const deleteFile = async (path: string) => {
+  await logToFile("Deleting local backup file...");
+  try {
+    await fs.unlink(path);
+    await logToFile("Local backup file deleted successfully.");
+  } catch (error) {
+    await logToFile(`Error deleting local file: ${error}`);
+  }
+};
+
+export const backup = async () => {
+  await logToFile("Initiating DB backup process...");
+
+  const timestamp = new Date().toISOString().replace(/[:.]+/g, "-");
+  const filename = `${env.BACKUP_PREFIX}backup-${timestamp}.sql`;
+  const filepath = `/tmp/${filename}`;
+
+  try {
+    await dumpToFile(filepath);
+    
+    const stats = await fs.stat(filepath);
+    await logToFile(`Backup file created. Size: ${stats.size} bytes`);
+    
+    if (stats.size < 1000) {
+      throw new Error(`Backup file is too small (${stats.size} bytes). Possible dump failure.`);
+    }
+    
+    await uploadToGCS({ name: filename, path: filepath });
+  } catch (error) {
+    await logToFile(`Backup failed: ${error}`);
     throw error;
   } finally {
-    await pool.end();
+    await deleteFile(filepath);
   }
 
-  const stats = await fs.promises.stat(path);
-  console.log(`DB dump completed. File size: ${stats.size} bytes`);
+  await logToFile("DB backup process completed.");
 };
