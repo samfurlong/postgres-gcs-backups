@@ -26,21 +26,33 @@ const uploadToGCS = async ({ name, path }: { name: string; path: string }) => {
 const dumpToFile = async (path: string) => {
   console.log("Dumping DB to file...");
 
-  await new Promise((resolve, reject) => {
-    exec(
-      `pg_dump ${env.BACKUP_DATABASE_URL} | tar -czf ${path} -`,
-      (error, _, stderr) => {
-        if (error) {
-          reject({ error: JSON.stringify(error), stderr });
-          return;
-        }
-
-        resolve(undefined);
+  return new Promise((resolve, reject) => {
+    const command = `pg_dump ${env.BACKUP_DATABASE_URL} | gzip > ${path}`;
+    exec(command, (error, stdout, stderr) => {
+      if (error) {
+        console.error(`exec error: ${error}`);
+        reject({ error: JSON.stringify(error), stderr });
+        return;
       }
-    );
+      if (stderr) {
+        console.error(`stderr: ${stderr}`);
+      }
+      if (stdout) {
+        console.log(`stdout: ${stdout}`);
+      }
+      
+      // Check if the file was created and has content
+      exec(`ls -l ${path}`, (err, output) => {
+        if (err) {
+          console.error(`Failed to check file: ${err}`);
+          reject(err);
+        } else {
+          console.log(`File details: ${output}`);
+          resolve(undefined);
+        }
+      });
+    });
   });
-
-  console.log("DB dumped to file...");
 };
 
 const deleteFile = async (path: string) => {
